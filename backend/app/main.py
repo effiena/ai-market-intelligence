@@ -1,18 +1,22 @@
-
 from fastapi import FastAPI, WebSocket
-from market import get_coin_data
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Dict, Any, List
+import asyncio
+
 from market import get_coin_data, get_historical_data
 from cycle_ai import detect_cycle
 from sentiment_ai import analyze_sentiment
 from health_ai import calculate_health_score
-from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, Any
-from pydantic import BaseModel
-from typing import List
-from fastapi import HTTPException
-import asyncio
+from get_prices import get_live_prices
+
+
 
 app = FastAPI()
+
+# -----------------------------
+# CORS CONFIG
+# -----------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -24,8 +28,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# -----------------------------
+# COINS LIST
+# -----------------------------
 COINS = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA"]
 
+
+# -----------------------------
+# ROOT
+# -----------------------------
 @app.get("/")
 def home():
     return {
@@ -33,35 +44,56 @@ def home():
     }
 
 
+# -----------------------------
+# COIN INFO
+# -----------------------------
 @app.get("/coin/{coin_name}")
 def coin(coin_name: str):
     return get_coin_data(coin_name)
 
 
+# -----------------------------
+# HISTORY
+# -----------------------------
 @app.get("/history/{coin_name}")
 def history(coin_name: str, days: int = 365):
     return get_historical_data(coin_name, days)
 
+
+# -----------------------------
+# CYCLE ANALYSIS
+# -----------------------------
 @app.get("/cycle/{coin_name}")
 def cycle(coin_name: str, days: int = 365):
-    history = get_historical_data(coin_name, days)
-    
-    if "error" in history:
-        return history
+    history_data = get_historical_data(coin_name, days)
 
-    result = detect_cycle(history)
+    if "error" in history_data:
+        return history_data
+
+    result = detect_cycle(history_data)
 
     return {
         "coin": coin_name,
-        "history": history,
+        "history": history_data,
         "cycle_analysis": result
     }
 
-@app.post("/sentiment")
-def sentiment(data: dict):
-    text = data.get("text", "")
-    return analyze_sentiment(text)
 
+# -----------------------------
+# SENTIMENT
+# -----------------------------
+class SentimentRequest(BaseModel):
+    text: str = ""
+
+
+@app.post("/sentiment")
+def sentiment(data: SentimentRequest):
+    return analyze_sentiment(data.text)
+
+
+# -----------------------------
+# HEALTH ANALYSIS
+# -----------------------------
 class HealthRequest(BaseModel):
     text: str = "Bitcoin market update"
 
@@ -74,34 +106,29 @@ def health(coin: str, request: HealthRequest):
     if coin not in valid_coins:
         return {"error": "Unsupported coin"}
 
-    # 1. Get history
-    history = get_historical_data(coin)
-
-    # 2. Cycle AI
-    cycle = detect_cycle(history)
-
-    # 3. Sentiment AI
+    history_data = get_historical_data(coin)
+    cycle = detect_cycle(history_data)
     sentiment = analyze_sentiment(request.text)
 
-    # 4. Health score
-    result = calculate_health_score(cycle, sentiment, history)
+    result = calculate_health_score(cycle, sentiment, history_data)
 
     return {
         "coin": coin,
         "health_analysis": result
     }
 
+
+# -----------------------------
+# MARKET OVERVIEW (AI RANKING)
+# -----------------------------
 @app.post("/market/overview")
 def market_overview(req: dict):
 
-    coins = ["BTC", "ETH", "SOL", "BNB", "XRP", "ADA"]
-
     results = []
 
-    for coin in coins:
+    for coin in COINS:
         history = get_historical_data(coin)
 
-        # SAFE GUARD (prevents crashes)
         if not history:
             results.append({
                 "coin": coin,
@@ -123,6 +150,22 @@ def market_overview(req: dict):
     return {"ranking": results}
 
 
+# -----------------------------
+# LIVE PRICES (NEW FIXED)
+# -----------------------------
+@app.get("/market/prices")
+def market_prices():
+
+    prices = get_live_prices()
+
+    return {
+        "prices": prices
+    }
+
+
+# -----------------------------
+# WEBSOCKET LIVE MARKET STREAM
+# -----------------------------
 @app.websocket("/ws/market")
 async def market_ws(websocket: WebSocket):
     await websocket.accept()
@@ -145,4 +188,6 @@ async def market_ws(websocket: WebSocket):
             "ranking": results
         })
 
-        await asyncio.sleep(3)  # live update every 3s
+        await asyncio.sleep(3)
+
+
